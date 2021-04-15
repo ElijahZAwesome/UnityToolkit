@@ -1,34 +1,38 @@
 ﻿using System;
 using System.Runtime.InteropServices.ComTypes;
+using System.Threading;
 using Discord;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+using UnityEngine;
 
 namespace Editor.DiscordPresence
 {
-    public class DiscordManager
+    [ExecuteInEditMode]
+    public class DiscordManager : MonoBehaviour
     {
         private static DiscordManager _instance;
         
         public const long CLIENT_ID = 481126411986534410;
         public const long APP_ID = 481126411986534410;
-
-        public DateTime TimeStarted;
         
         private Discord.Discord _client;
         private ActivityManager _presence;
+        private bool _started = false;
 
         private DiscordManager(long? clientId = null)
         {
             _instance = this;
-            TimeStarted = DateTime.Now;
             _client = new Discord.Discord(clientId ?? CLIENT_ID, (ulong) Discord.CreateFlags.NoRequireDiscord);
             _presence = _client.GetActivityManager();
 
             EditorApplication.playModeStateChanged += PlayStateChanged;
             EditorApplication.hierarchyChanged += HierarchyChanged;
             EditorApplication.quitting += Shutdown;
+            InvokeRepeating(nameof(EditorUpdate), 0, 1000 / 60);
         }
+
+        private void EditorUpdate() => _client.RunCallbacks();
 
         public static void Start(long? clientId = null)
         {
@@ -39,12 +43,19 @@ namespace Editor.DiscordPresence
                 _instance._client = new Discord.Discord(clientId.Value, (ulong) Discord.CreateFlags.NoRequireDiscord);
                 _instance._presence = _instance._client.GetActivityManager();
             }
+
+            _instance._started = true;
             UpdatePresence();
         }
 
         public static void UpdatePresence(long? applicationId = null)
         {
+            if (!_instance._started)
+                return;
             EnsureInitialized();
+            var sceneName = EditorSceneManager.GetActiveScene().name;
+            if (string.IsNullOrEmpty(sceneName))
+                sceneName = "an unsaved scene";
             _instance._presence.UpdateActivity(new Activity()
             {
                 ApplicationId = applicationId ?? APP_ID,
@@ -53,21 +64,33 @@ namespace Editor.DiscordPresence
                     LargeImage = "unityicon",
                     LargeText = "Unity Editor"
                 },
-                Details = "Working on " + EditorSceneManager.GetActiveScene().name;
-            }, null);
+                Name = "Unity Editor",
+                Details = "Working on " + sceneName,
+                Timestamps = new ActivityTimestamps()
+                {
+                    Start = (long) (DateTime.UtcNow.AddSeconds(-EditorApplication.timeSinceStartup)
+                                    - new DateTime(1970, 1, 1)).TotalSeconds
+                },
+                Type = ActivityType.Playing
+            }, result =>
+            {
+                if(result != Result.Ok)
+                    Debug.LogError("Failed to update Discord Activity: " + result);
+            });
         }
 
         public static void Stop()
         {       
             EnsureInitialized();
-            _instance._presence.ClearActivity(null);
+            _instance._started = false;
+            _instance._presence.ClearActivity(result => { Debug.Log(result); });
         }
 
         public static void Shutdown()
         {
             EnsureInitialized();
-            Stop();
             _instance._client.Dispose();
+            _instance.CancelInvoke(nameof(EditorUpdate));
         }
 
         private void HierarchyChanged()
@@ -77,7 +100,7 @@ namespace Editor.DiscordPresence
 
         private void PlayStateChanged(PlayModeStateChange obj)
         {
-            if(obj == PlayModeStateChange.EnteredPlayMode)
+            if(obj == PlayModeStateChange.ExitingEditMode)
                 Stop();
             else if(obj == PlayModeStateChange.ExitingPlayMode)
                 Start();
