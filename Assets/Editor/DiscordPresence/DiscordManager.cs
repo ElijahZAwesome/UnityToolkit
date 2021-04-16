@@ -1,141 +1,114 @@
 ﻿using System;
-using System.Threading;
+using System.Linq;
 using Discord;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 
 namespace Editor.DiscordPresence
 {
-    public class DiscordManager
+    [InitializeOnLoad]
+    public static class DiscordManager
     {
-        private static DiscordManager _instance;
-
         public const long CLIENT_ID = 481126411986534410;
         public const long APP_ID = 481126411986534410;
 
-        private readonly Discord.Discord _client;
-        private readonly ActivityManager _presence;
-        private readonly long _startTime;
-        private bool _started = false;
+        private static Discord.Discord _client;
+        private static ActivityManager _presence;
 
-        private DiscordManager(long? clientId = null)
+        static DiscordManager()
         {
-            _startTime = (long) (DateTime.UtcNow.AddSeconds(-EditorApplication.timeSinceStartup)
-                                 - new DateTime(1970, 1, 1)).TotalSeconds;
-            _client = new Discord.Discord(clientId ?? CLIENT_ID, (ulong) CreateFlags.NoRequireDiscord);
+            EditorApplication.playModeStateChanged += OnPlayStateChanged;
+
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+                return;
+
+            Initialize();
+        }
+
+        private static void Initialize()
+        {
+            if (Application.isBatchMode)
+            {
+                Debug.Log($"Discord RPC can't be initialized in BatchMode.");
+                return;
+            }
+
+            if (_client != null)
+                return;
+
+            Debug.Log("Init");
+            _client = new Discord.Discord(CLIENT_ID, (long) CreateFlags.NoRequireDiscord);
             _presence = _client.GetActivityManager();
 
-            EditorApplication.playModeStateChanged += PlayStateChanged;
-            EditorApplication.hierarchyChanged += HierarchyChanged;
+            EditorApplication.update += Update;
+            EditorApplication.hierarchyChanged += UpdatePresence;
             EditorApplication.quitting += Shutdown;
-            EditorApplication.update += EditorUpdate;
-            _client.SetLogHook(LogLevel.Debug, (level, message) =>
-            {
-                switch (level)
-                {
-                    case LogLevel.Info:
-                        Debug.Log(message);
-                        break;
-                    case LogLevel.Warn:
-                        Debug.LogWarning(message);
-                        break;
-                    case LogLevel.Error:
-                        Debug.LogError(message);
-                        break;
-                    case LogLevel.Debug:
-                        Debug.Log(message);
-                        break;
-                }
-            });
-        }
-
-        private void EditorUpdate() => _client.RunCallbacks();
-
-        public static void Initialize(long? clientId = null)
-        {
-            if (_instance != null)
-                return;
-
-            _instance = new DiscordManager(clientId);
-            Start();
-        }
-
-        public static void UpdatePresence(long? applicationId = null)
-        {
-            if (_instance == null || !_instance._started)
-                return;
-
-            var sceneName = EditorSceneManager.GetActiveScene().name;
-            if (string.IsNullOrEmpty(sceneName))
-                sceneName = "an unsaved scene";
-            _instance._presence.UpdateActivity(new Activity()
-            {
-                ApplicationId = applicationId ?? APP_ID,
-                Assets = new ActivityAssets()
-                {
-                    LargeImage = "unityicon",
-                    LargeText = "Unity Editor"
-                },
-                Name = "Unity Editor",
-                Details = "Working on " + sceneName,
-                Timestamps = new ActivityTimestamps()
-                {
-                    Start = _instance._startTime
-                },
-                Type = ActivityType.Playing
-            }, result =>
-            {
-                if (result != Result.Ok)
-                    Debug.LogError("Failed to update Discord Activity: " + result);
-            });
-        }
-
-        public static void Start()
-        {
-            if (_instance == null)
-                return;
-            _instance._started = true;
-            Debug.Log("Started");
             UpdatePresence();
         }
 
-        public static void Stop()
+        private static void Update()
         {
-            if (_instance == null)
+            try
+            {
+                _client?.RunCallbacks();
+            }
+            catch (ResultException e)
+            {
+                Debug.LogError("Discord GameSDK crashed! " + e);
+                Shutdown();
+            }
+        }
+
+        private static void UpdatePresence()
+        {
+            if (_client == null)
                 return;
-            _instance._started = false;
-            Debug.Log("Stopped");
-            _instance._presence.ClearActivity(_ => { });
+
+            var scene = EditorSceneManager.GetActiveScene().name;
+            if (string.IsNullOrEmpty(scene))
+                scene = "In an unnamed scene";
+            else
+                scene = "In scene " + scene;
+
+            var activity = new Activity()
+            {
+                ApplicationId = APP_ID,
+                Assets = new ActivityAssets()
+                {
+                    LargeImage = "unityicon",
+                    LargeText = "Unity Editor " + Application.unityVersion
+                },
+                Name = "Unity Editor",
+                Details = "Working on " + Application.productName,
+                State = scene,
+                Timestamps = new ActivityTimestamps()
+                {
+                    Start = (long) (DateTime.UtcNow.AddSeconds(-EditorApplication.timeSinceStartup) -
+                                    new DateTime(1970, 1, 1)).TotalSeconds
+                }
+            };
+
+            _presence.UpdateActivity(activity, _ => { });
         }
 
-        public static void Shutdown()
+        private static void Shutdown()
         {
-            if (_instance == null)
-                return;
-            Debug.Log("Shutting Down");
-            EditorApplication.playModeStateChanged -= _instance.PlayStateChanged;
-            EditorApplication.hierarchyChanged -= _instance.HierarchyChanged;
-            EditorApplication.quitting -= Shutdown;
-            EditorApplication.update -= _instance.EditorUpdate;
-            _instance._client.Dispose();
-            _instance._started = false;
-            _instance = null;
+            Debug.LogWarning("Shutting Down");
+            if (_client != null)
+            {
+                _client.Dispose();
+                _client = null;
+            }
         }
 
-        private void HierarchyChanged() => UpdatePresence();
-
-        private void PlayStateChanged(PlayModeStateChange obj)
+        private static void OnPlayStateChanged(PlayModeStateChange playModeStateChange)
         {
-            if (obj == PlayModeStateChange.ExitingEditMode)
-                Stop();
-            else if (obj == PlayModeStateChange.ExitingPlayMode)
-                Start();
-        }
-
-        ~DiscordManager()
-        {
-            Debug.Log("Destroyed DiscordManager");
+            if (playModeStateChange == PlayModeStateChange.ExitingEditMode)
+                Shutdown();
+            else if (playModeStateChange == PlayModeStateChange.EnteredEditMode)
+                Initialize();
         }
     }
 }
