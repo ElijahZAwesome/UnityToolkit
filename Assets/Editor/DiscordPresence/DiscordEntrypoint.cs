@@ -12,7 +12,7 @@ namespace Editor.DiscordPresence
     {
         static DiscordEntrypoint()
         {
-            DiscordManager.Start();
+            DiscordManager.Initialize();
         }
     }
 }
