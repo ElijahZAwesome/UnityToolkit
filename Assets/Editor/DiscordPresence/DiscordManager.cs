@@ -1,8 +1,6 @@
 ﻿using System;
-using System.Linq;
 using Discord;
 using UnityEditor;
-using UnityEditor.Compilation;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 
@@ -38,7 +36,6 @@ namespace Editor.DiscordPresence
             if (_client != null)
                 return;
 
-            Debug.Log("Init");
             _client = new Discord.Discord(CLIENT_ID, (long) CreateFlags.NoRequireDiscord);
             _presence = _client.GetActivityManager();
 
@@ -95,7 +92,6 @@ namespace Editor.DiscordPresence
 
         private static void Shutdown()
         {
-            Debug.LogWarning("Shutting Down");
             if (_client != null)
             {
                 _client.Dispose();
